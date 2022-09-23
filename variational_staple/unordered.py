@@ -3,14 +3,15 @@ from scipy.special import logsumexp, softmax, digamma, gammaln
 
 
 def staple(obs, prior=None, max_iter=1000, tol=1e-5):
-    """Classic STAPLE (with fixed class frequency)
+    """Classic STAPLE
 
     Parameters
     ----------
     obs : (N, R, K) array[float] or (N, R) array[int]
         Classification of N data points by R raters into K classes
-    prior : (K,) array
-        Prior probability of observing each class
+    prior : (K,) array, optional
+        Prior probability of observing each class.
+        By default, it is ML estimated
 
     Returns
     -------
@@ -19,6 +20,8 @@ def staple(obs, prior=None, max_iter=1000, tol=1e-5):
         saying "red" when the truth is "green"
     posterior : (N, K) array
         Posterior probability of the true classification
+    prior : (K,) array
+        Prior probability of observing each class
 
     References
     ----------
@@ -38,9 +41,12 @@ def staple(obs, prior=None, max_iter=1000, tol=1e-5):
     nb_obs, nb_raters, nb_classes = obs.shape
 
     # init log-prior: uniform
+    learn_prior = False
     if prior is None:
-        prior = np.ones(nb_classes) / nb_classes
-    prior = np.asarray(prior)
+        learn_prior = True
+        prior = np.ones(nb_classes)
+    prior = np.broadcast_to(np.asarray(prior), [nb_classes])
+    prior = prior / nb_classes
     prior = np.log(prior)
 
     # init perf: softmax(-5, 5)
@@ -54,23 +60,28 @@ def staple(obs, prior=None, max_iter=1000, tol=1e-5):
         loss_prev = loss
 
         # E step
-        posterior = prior + np.einsum('rkl,nrk->nl', np.log(perf), obs)
+        posterior = prior + np.einsum('nrk,rkl->nl', obs, np.log(perf))
         loss = -np.mean(logsumexp(posterior, axis=1))
         posterior = softmax(posterior, axis=1)
 
-        # M step
+        # M step: performance matrix
         perf = np.einsum('nrk,nl->rkl', obs, posterior)
-        perf = softmax(np.log(perf + 1e-5))
+        perf = softmax(np.log(perf + 1e-5), axis=1)
 
-        print(loss, loss_prev-loss)
+        # M step: class frequency
+        if learn_prior and (n_iter + 1) % 10 == 0:
+            prior = np.log(np.mean(posterior, axis=0))
+
         if loss_prev - loss < tol:
             break
 
-    return perf, posterior
+    prior = softmax(prior + 1e-5)
+
+    return perf, posterior, prior
 
 
 def vstaple(obs, dirichlet=(0.8, 10), prior=None, max_iter=1000, tol=1e-5):
-    """Variational STAPLE (with fixed performance prior)
+    """Variational STAPLE (with performance prior)
 
     Notes
     -----
@@ -95,10 +106,10 @@ def vstaple(obs, dirichlet=(0.8, 10), prior=None, max_iter=1000, tol=1e-5):
     perf : (R, K, K) array
         Expected performance matrix = conditional probability of a rater
         saying "red" when the truth is "green"
-    prior : (K,) array
-        Prior probability of observing each class
     posterior : (N, K) array
         Posterior probability of the true classification
+    prior : (K,) array
+        Prior probability of observing each class
 
     References
     ----------
@@ -131,8 +142,9 @@ def vstaple(obs, dirichlet=(0.8, 10), prior=None, max_iter=1000, tol=1e-5):
     learn_prior = False
     if prior is None:
         learn_prior = True
-        prior = np.ones(nb_classes) / nb_classes
-    prior = np.asarray(prior)
+        prior = np.ones(nb_classes)
+    prior = np.broadcast_to(np.asarray(prior), [nb_classes])
+    prior = prior / nb_classes
     prior = np.log(prior)
 
     # init perf: form prior
@@ -162,7 +174,6 @@ def vstaple(obs, dirichlet=(0.8, 10), prior=None, max_iter=1000, tol=1e-5):
         if learn_prior and (n_iter + 1) % 10 == 0:
             prior = np.log(np.mean(posterior, axis=0))
 
-        print(loss, (loss_prev - loss) / len(obs))
         if loss_prev - loss < tol * len(obs):
             break
 
