@@ -94,7 +94,7 @@ def vstaple(obs, dirichlet=(0.8, 10), prior=None, max_iter=1000, tol=1e-5):
     obs : (N, R, K) array[float] or (N, R) array[int]
         Classification of N data points by R raters into K classes
     dirichlet : tuple[float or (R,) array]
-        Parameter of the dirichlet Prior:
+        Parameter of the Dirichlet prior:
             [0] probability of being correct, in 0..1
             [1] degrees of freedom, > 0 (higher = stronger prior)
     prior : (K,) array, optional
@@ -134,7 +134,7 @@ def vstaple(obs, dirichlet=(0.8, 10), prior=None, max_iter=1000, tol=1e-5):
     dirichlet = np.broadcast_to(np.asarray(dirichlet), [nb_raters])[:, None, None]
     df = np.broadcast_to(np.asarray(df), [nb_raters])[:, None, None]
     I = np.eye(nb_classes)
-    dirichlet = I * dirichlet + (1 - I) * (1 - dirichlet) / (nb_classes-1)
+    dirichlet = I * dirichlet + (1 - I) * (1 - dirichlet) / (nb_classes - 1)
     dirichlet *= df
     sumdirichlet = np.sum(dirichlet, axis=1, keepdims=True)
 
@@ -181,3 +181,4 @@ def vstaple(obs, dirichlet=(0.8, 10), prior=None, max_iter=1000, tol=1e-5):
     prior = softmax(prior + 1e-5)
 
     return perf, posterior, prior
+
