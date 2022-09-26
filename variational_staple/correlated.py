@@ -62,6 +62,7 @@ def cstaple(obs, dirichlet=(5, 10), prior=None, max_iter=1000, tol=1e-5):
     prior = prior / nk
 
     loss = float('inf')
+    armijo = 1e-3
     for n_iter in range(max_iter):
         loss_prev = loss
 
@@ -81,27 +82,33 @@ def cstaple(obs, dirichlet=(5, 10), prior=None, max_iter=1000, tol=1e-5):
             thetaprev, logzprev, sublossprev = theta, logz, subloss
             # gradient == E[xi xj] - mean(obs[xni xnj])
             delta = marginal2_pairwise(perf) - g0
-            # hessian is majorized by identity
-            theta -= 0.1 * delta
-            # update normalization term
-            logz = lognorm_pairwise(theta)
+            success = False
+            for n_ls in range(12):
+                theta = thetaprev - armijo * delta
+                logz = lognorm_pairwise(theta)
+                # check subloss
+                subloss = np.sum((df + df0) * logz) / np.sum(df + df0)
+                subloss -= np.dot(g0.flatten(), theta.flatten())
+                if subloss < sublossprev:
+                    success = True
+                    armijo = 1.5 * armijo
+                    break
+                else:
+                    armijo = 0.5 * armijo
+            if not success:
+                theta, logz = thetaprev, logzprev
+                armijo = 1e-3
+                break
             logperf = theta - logz / nperf
             perf = ensure_zeros(np.exp(logperf.clip(None, 512)))
-            # check subloss
-            subloss = np.sum((df + df0) * logz) / np.sum(df + df0)
-            subloss -= np.dot(g0.flatten(), theta.flatten())
             if sublossprev - subloss < 2 * tol:
-                if sublossprev < subloss:
-                    theta, logz = thetaprev, logzprev
-                logperf = theta - logz / nperf
-                perf = ensure_zeros(np.exp(logperf.clip(None, 512)))
                 break
 
         # loss: dirichlet prior
         loss += df0 * (np.sum(logz) - np.dot(alpha.flatten(), logperf.flatten()))
 
         # M step: class frequency
-        if learn_prior and (n_iter + 1) % 10 == 0:
+        if learn_prior:
             prior = df / nobs
 
         # print(n_iter, loss, (loss_prev - loss) / len(obs))
