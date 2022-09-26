@@ -2,11 +2,11 @@
 Extension of STAPLE that models correlations between raters
 """
 import numpy as np
-from scipy.special import logsumexp, softmax, digamma, gammaln
+from scipy.special import logsumexp, softmax
 
 
-def vcstaple(obs, dirichlet=(5, 10), prior=None, max_iter=1000, tol=1e-5):
-    """Variational C-STAPLE (raters covariance + performance prior)
+def cstaple(obs, dirichlet=(5, 10), prior=None, max_iter=1000, tol=1e-5):
+    """C-STAPLE (raters co-occurrence + performance prior)
 
     Parameters
     ----------
@@ -33,75 +33,92 @@ def vcstaple(obs, dirichlet=(5, 10), prior=None, max_iter=1000, tol=1e-5):
     """
     # init obs: convert to one-hot
     if np.issubdtype(obs.dtype, np.integer):
-        nb_obs, nb_raters = obs.shape
-        nb_classes = obs.max() + 1
-        onehot = np.zeros([nb_obs, nb_raters, nb_classes])
+        df, nr = obs.shape
+        nk = obs.max() + 1
+        onehot = np.zeros([df, nr, nk])
         np.put_along_axis(onehot, obs[:, :, None], 1, axis=-1)
         obs = onehot
-    nb_obs, nb_raters, nb_classes = obs.shape
-    nb_perf = (nb_raters * (nb_raters + 1)) // 2
+    nobs, nr, nk = obs.shape
+    nperf = (nr * (nr + 1)) // 2
 
     # init dirichlet: reshape to diagonal [R, K, R, K, K]
-    logperf00, df0 = dirichlet
-    logperf00 = np.asarray(logperf00)
-    df0 = np.asarray(df0)
-    logperf0 = np.zeros([nb_raters, nb_classes, nb_raters, nb_classes,
-                         nb_classes])
-    for k in range(nb_classes):
-        logperf0[range(nb_raters), k, range(nb_raters), k, k] = logperf00
+    alpha, df0 = dirichlet
+    alpha, df0 = np.asarray(alpha), np.asarray(df0)
+    theta = np.zeros([nr, nk, nr, nk, nk])
+    for k in range(nk):
+        theta[range(nr), k, range(nr), k, k] = alpha
 
-    logz0 = lognorm_pairwise(logperf0)
-    logperf0 -= logz0 / nb_perf
-    perf0 = np.exp(logperf0)
-    perf0 *= df0
+    logz = lognorm_pairwise(theta)
+    logperf = theta - logz / nperf
+    perf = ensure_zeros(np.exp(logperf))    # initial confusion matrix
+    alpha = marginal2_pairwise(perf)        # fake observations used as prior
 
     # init log-prior: uniform
     learn_prior = False
     if prior is None:
         learn_prior = True
-        prior = np.ones(nb_classes)
-    prior = np.broadcast_to(np.asarray(prior), [nb_classes])
-    prior = prior / nb_classes
-    prior = np.log(prior)
-
-    # init perf: from prior
-    df = df0 + nb_obs
-    perf = perf0 * ((df0 + nb_obs) / df)
-    logperf = digamma(perf) - digamma(perf.reshape([-1, perf.shape[-1]]).sum(0))
+        prior = np.ones(nk)
+    prior = np.broadcast_to(np.asarray(prior), [nk])
+    prior = prior / nk
 
     loss = float('inf')
     for n_iter in range(max_iter):
         loss_prev = loss
 
-        # variational E step: true classification
-        posterior = prior + np.einsum('nri,risjk,nsj->nk', obs, logperf, obs)
-        loss = -np.sum(logsumexp(posterior, axis=1))
-        posterior = softmax(posterior, axis=1)
+        # E step: true classification
+        logposterior = np.log(prior) - logz \
+                       + np.einsum('nri,risjk,nsj->nk', obs, theta, obs)
+        loss = -np.sum(logsumexp(logposterior, axis=1))
+        posterior = softmax(logposterior, axis=1)
+        df = posterior.sum(axis=0)
 
-        # variational E step: performance matrix
-        perf = perf0 + np.einsum('nri,nk,nsj->risjk', obs, posterior, obs)
-        df = perf.reshape([-1, perf.shape[-1]]).sum(0)
-        logperf = digamma(perf) - digamma(df)
+        # M step: performance matrix
+        g0 = df0 * alpha + np.einsum('nri,nk,nsj->risjk', obs, posterior, obs)
+        g0 = g0 / (df0 + df)
+        subloss = np.sum((df + df0) * logz) / np.sum(df + df0)
+        subloss -= np.dot(g0.flatten(), theta.flatten())
+        for _ in range(100):
+            thetaprev, logzprev, sublossprev = theta, logz, subloss
+            # gradient == E[xi xj] - mean(obs[xni xnj])
+            delta = marginal2_pairwise(perf) - g0
+            # hessian is majorized by identity
+            theta -= 0.1 * delta
+            # update normalization term
+            logz = lognorm_pairwise(theta)
+            logperf = theta - logz / nperf
+            perf = ensure_zeros(np.exp(logperf.clip(None, 512)))
+            # check subloss
+            subloss = np.sum((df + df0) * logz) / np.sum(df + df0)
+            subloss -= np.dot(g0.flatten(), theta.flatten())
+            if sublossprev - subloss < 2 * tol:
+                if sublossprev < subloss:
+                    theta, logz = thetaprev, logzprev
+                logperf = theta - logz / nperf
+                perf = ensure_zeros(np.exp(logperf.clip(None, 512)))
+                break
 
-        # KL between Dirichlet distributions
-        loss += (perf - perf0) * (digamma(perf) - digamma(df))
-        loss += gammaln(perf0) - gammaln(perf)
-        loss = np.sum(loss) + np.sum(digamma(df) - digamma(df0))
+        # loss: dirichlet prior
+        loss += df0 * (np.sum(logz) - np.dot(alpha.flatten(), logperf.flatten()))
 
         # M step: class frequency
         if learn_prior and (n_iter + 1) % 10 == 0:
-            prior = np.log(np.mean(posterior, axis=0))
+            prior = df / nobs
 
+        # print(n_iter, loss, (loss_prev - loss) / len(obs))
         if loss_prev - loss < tol * len(obs):
             break
 
-    perf = np.log(perf)
-    logz = lognorm_pairwise(perf)
-    perf -= logz / nb_perf
-    perf = np.exp(perf)
-    prior = softmax(prior + 1e-5)
-
     return perf, posterior, prior
+
+
+def ensure_zeros(prob):
+    """Ensure that co-occurrence of different classes in the same rater is zero"""
+    nr, nk, nr, nk, *batch = prob.shape
+    for r in range(nr):
+        diag = prob[r, range(nk), r, range(nk)]
+        prob[r, :, r, :] = 0
+        prob[r, range(nk), r, range(nk)] = diag
+    return prob
 
 
 def lognorm_pairwise(logp, k=tuple(), sumlogp=0):
@@ -170,6 +187,17 @@ def norm_pairwise(prob, k=tuple(), prodp=1, func=None):
     return z
 
 
+def marginal2_pairwise(prob):
+    nr, nk, nr, nk, *batch = prob.shape
+    out = np.zeros_like(prob)
+    for i in range(nr):
+        out[i, range(nk), i, range(nk)] = marginal_pairwise(prob, i)
+        for j in range(i):
+            out[i, :, j, :] = marginal_pairwise(prob, [i, j])
+            out[j, :, i, :] = np.swapaxes(out[i, :, j, :], 0, 1)
+    return out
+
+
 def marginal_pairwise(prob, indices=None, k=tuple(), prod=1, z=None):
     """Compute marginal probability in the pairwise multinomial case
 
@@ -199,12 +227,11 @@ def marginal_pairwise(prob, indices=None, k=tuple(), prod=1, z=None):
     if r == nr:
         return [prod]
 
-    if not isinstance(indices, (list, tuple, range)):
-        indices = [indices]
-    indices = list(indices)
-
     # reorder such that marginalized indices are last
     if r == 0:
+        if not isinstance(indices, (list, tuple, range)):
+            indices = [indices]
+        indices = list(indices)
         marginalized_indices = [i for i in range(nr) if i not in indices]
         all_indices = indices + marginalized_indices
         prob = prob[all_indices][:, :, all_indices]
@@ -257,13 +284,13 @@ def covariance_pairwise(prob, i=None, j=None):
     if j is None:
         j = i
     if j == i:
-        # variance
+        # rater variance (== within rater covariance)
         p = marginal_pairwise(prob, i)
         c = - p[:, None] * p[None, :]       # outer product
         c[range(nk), range(nk)] += p        # diagonal
         return c
     else:
-        # covariance
+        # rater covariance
         joint = marginal_pairwise(prob, [i, j])
         margi = marginal_pairwise(prob, i)
         margj = marginal_pairwise(prob, j)
