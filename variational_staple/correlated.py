@@ -5,7 +5,7 @@ import numpy as np
 from scipy.special import logsumexp, softmax
 
 
-def cstaple(obs, dirichlet=(5, 10), prior=None, max_iter=1000, tol=1e-5):
+def cstaple(obs, dirichlet=(1, 10), prior=None, max_iter=1000, tol=1e-5):
     """C-STAPLE (raters co-occurrence + performance prior)
 
     Parameters
@@ -112,7 +112,7 @@ def cstaple(obs, dirichlet=(5, 10), prior=None, max_iter=1000, tol=1e-5):
             prior = df / nobs
 
         # print(n_iter, loss, (loss_prev - loss) / len(obs))
-        if loss_prev - loss < tol * len(obs):
+        if n_iter > 20 and loss_prev - loss < tol * len(obs):
             break
 
     return perf, posterior, prior
