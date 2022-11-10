@@ -202,12 +202,13 @@ prior : (K,) array
 
 ## References
 
-- **"Simultaneous Truth and Performance Level Estimation (STAPLE):
+- **"Simultaneous Truth and Performance Level Estimation (STAPLE): <br />
      An Algorithm for the Validation of Image Segmentation"** <br />
   Warfield, Zou & Wells <br />
   IEEE TMI (2004)
 - **"Incorporating Priors on Expert Performance Parameters for Segmentation 
-     Validation and Label Fusion: A Maximum a Posteriori STAPLE"** <br />
+     Validation and Label Fusion: <br /> 
+     A Maximum a Posteriori STAPLE"** <br />
    Commowick & Warfield <br />
    MICCAI (2010)
 - **"Consolidation of Expert Ratings of Motion Artifacts using Hierarchical 
